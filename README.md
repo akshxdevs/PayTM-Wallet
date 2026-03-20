@@ -1,6 +1,11 @@
 # PayTM Wallet
 
-Backend wallet service built with Express, TypeScript, Prisma, and PostgreSQL.
+Wallet API for user balances, on-ramp funding, peer transfers, and merchant payments.
+
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9.3-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Express](https://img.shields.io/badge/Express-4.21.2-000000?logo=express&logoColor=white)](https://expressjs.com/)
+[![Prisma Client](https://img.shields.io/badge/Prisma_Client-5.22.0-2D3748?logo=prisma&logoColor=white)](https://www.prisma.io/)
+[![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](server/package.json)
 
 ## Overview
 
