@@ -1,148 +1,265 @@
 import jwt from "jsonwebtoken";
-import { PrismaClient } from "@prisma/client";
+import bcrypt from "bcrypt";
 import { Router } from "express";
-import { USER_SECERT } from "../config";
+import { USER_SECRET } from "../config";
+import { prisma } from "../db";
 import { AuthRequest, userAuthMiddleware } from "../middleware";
-export const userRouter = Router()
+import {
+    userSignupSchema,
+    signinSchema,
+    onrampSchema,
+    merchantTransferSchema,
+    userTransferSchema,
+} from "../validation";
 
-const prismaClient = new PrismaClient()
+export const userRouter = Router();
 
-userRouter.post("/signup",async(req,res)=>{
+userRouter.post("/signup", async (req, res) => {
     try {
-        const {name,username,password} = req.body
-        if (!name || !username || !password){
-            res.status(403).send({
-                message:"All feilds are required!"
-            })
-        }else {
-            await prismaClient.$transaction(async(tx)=>{
-                const user = await tx.user.create({
-                    data:{
-                        name:name,
-                        username:username,
-                        password:password
-                    }
-                })
-                await tx.userAccount.create({
-                    data:{
-                        userId: user.id
-                    }
-                })
-                res.json({
-                    message:"User Account created sucessfully!"
-                })
-            })    
+        const parsed = userSignupSchema.safeParse(req.body);
+        if (!parsed.success) {
+            res.status(400).json({ message: parsed.error.issues[0].message });
+            return;
         }
-    } catch (error) {
-        res.status(411).send({message:"Error while sigining.."})
-    }
-})
+        const { name, username, password } = parsed.data;
 
-userRouter.post("/signin",async(req,res)=>{
-    try {
-        const {username,password} = req.body
-        if (!username || !password){
-            res.status(403).send({
-                message:"All feilds are required!"
-            })
+        const existing = await prisma.user.findUnique({ where: { username } });
+        if (existing) {
+            res.status(409).json({ message: "Username already taken" });
+            return;
         }
-        const user = await prismaClient.user.findFirst({
-            where:{
-                username:username
-            }
-        }) 
-        if (user) {
-            const token = jwt.sign({
-                ID : user.id,
-            },USER_SECERT)
-            res.json({
-                message:"User Login Sucessfull!!",
-                token: token
-            })
-        }else{
-            res.status(403).send({
-                message:"No User Found!!"
-            })
-        }
-        
-    } catch (error) {
-        res.status(411).send({message:"Error while logging.."})
-    }
-})
 
+        await prisma.$transaction(async (tx) => {
+            const hashedPassword = await bcrypt.hash(password, 10);
+            const user = await tx.user.create({
+                data: { name, username, password: hashedPassword },
+            });
+            await tx.userAccount.create({
+                data: { userId: user.id },
+            });
+        });
 
-userRouter.post("/onramp",async(req,res)=>{
-    try {
-        const {userId,amount} = req.body
-        await prismaClient.userAccount.update({
-            where:{
-                userId:userId
-            },
-            data:{
-                balance:{
-                    increment:amount
-                }
-            }
-        })
-        res.json({
-            message:"On Ramp Done"
-        })
+        res.json({ message: "User account created successfully!" });
     } catch (error) {
-        res.status(411).send({message:"Error while logging.."})
+        res.status(500).json({ message: "Error while signing up" });
     }
 });
-//@ts-ignore
-userRouter.post("/transfer",userAuthMiddleware,async(req:AuthRequest,res)=>{
-    const {merchantId,amount} = req.body
-    const userId = req.ID
-    const paymentDone = await prismaClient.$transaction(async(tx)=>{
-        await tx.$queryRaw`SELECT * FROM "UserAccount" WHERE "userId" = ${userId} FOR UPDATE`;
-        const userAccount = await tx.userAccount.findFirst({
-            where:{
-                userId:userId
-            }
-        })
-        if ((userAccount?.balance || 0) < amount ) {
-            res.status(403).send({
-                message:"Insufficient Balance!!"
-            })
+
+userRouter.post("/signin", async (req, res) => {
+    try {
+        const parsed = signinSchema.safeParse(req.body);
+        if (!parsed.success) {
+            res.status(400).json({ message: parsed.error.issues[0].message });
+            return;
+        }
+        const { username, password } = parsed.data;
+
+        const user = await prisma.user.findUnique({ where: { username } });
+        if (!user || !(await bcrypt.compare(password, user.password))) {
+            res.status(403).json({ message: "Invalid username or password!" });
+            return;
         }
 
-        console.log("Balance Check Passed!!");
-        
-        await new Promise((r)=> setTimeout(r,5000))
-        await tx.userAccount.update({
-            where:{
-                userId:userId
-            },
-            data:{
-                balance:{
-                    decrement:amount
-                }
-            }
-        })
-        await tx.merchantAccount.update({
-            where:{
-                merchantId:merchantId
-            },
-            data:{
-                balance:{
-                    increment:amount
-                }
-            }
-        });
-        return true;
-    },{
-        maxWait:50000,
-        timeout:100000
-    })
-    if (paymentDone) {
-        return res.json({
-            message:"Payment Successfull"
-        })
-    }else{
-        return res.status(411).json({
-            message:"Payment Unsuccessfull"
-        })
+        const token = jwt.sign({ ID: user.id }, USER_SECRET);
+        res.json({ message: "User login successful!", token });
+    } catch (error) {
+        res.status(500).json({ message: "Error while signing in" });
     }
-})
+});
+
+//@ts-ignore
+userRouter.get("/balance", userAuthMiddleware, async (req: AuthRequest, res) => {
+    try {
+        const account = await prisma.userAccount.findUnique({
+            where: { userId: req.ID },
+        });
+        if (!account) {
+            res.status(404).json({ message: "Account not found" });
+            return;
+        }
+        res.json({ balance: account.balance, locked: account.locked });
+    } catch (error) {
+        res.status(500).json({ message: "Error fetching balance" });
+    }
+});
+
+//@ts-ignore
+userRouter.get("/transactions", userAuthMiddleware, async (req: AuthRequest, res) => {
+    try {
+        const transactions = await prisma.transaction.findMany({
+            where: {
+                OR: [
+                    { fromUserId: req.ID },
+                    { toUserId: req.ID },
+                ],
+            },
+            orderBy: { createdAt: "desc" },
+            take: 20,
+        });
+        res.json({ transactions });
+    } catch (error) {
+        res.status(500).json({ message: "Error fetching transactions" });
+    }
+});
+
+//@ts-ignore
+userRouter.post("/onramp", userAuthMiddleware, async (req: AuthRequest, res) => {
+    try {
+        const parsed = onrampSchema.safeParse(req.body);
+        if (!parsed.success) {
+            res.status(400).json({ message: parsed.error.issues[0].message });
+            return;
+        }
+        const { amount } = parsed.data;
+        const userId = req.ID!;
+
+        await prisma.$transaction(async (tx) => {
+            await tx.userAccount.update({
+                where: { userId },
+                data: { balance: { increment: amount } },
+            });
+            await tx.transaction.create({
+                data: {
+                    amount,
+                    type: "ONRAMP",
+                    toUserId: userId,
+                },
+            });
+        });
+
+        res.json({ message: "On-ramp successful" });
+    } catch (error) {
+        res.status(500).json({ message: "Error during on-ramp" });
+    }
+});
+
+//@ts-ignore
+userRouter.post("/transfer/merchant", userAuthMiddleware, async (req: AuthRequest, res) => {
+    try {
+        const parsed = merchantTransferSchema.safeParse(req.body);
+        if (!parsed.success) {
+            res.status(400).json({ message: parsed.error.issues[0].message });
+            return;
+        }
+        const { merchantId, amount } = parsed.data;
+        const userId = req.ID!;
+
+        await prisma.$transaction(async (tx) => {
+            await tx.$queryRaw`SELECT * FROM "UserAccount" WHERE "userId" = ${userId} FOR UPDATE`;
+
+            const userAccount = await tx.userAccount.findUnique({
+                where: { userId },
+            });
+            if (!userAccount || userAccount.balance < amount) {
+                throw new Error("INSUFFICIENT_BALANCE");
+            }
+
+            const merchantAccount = await tx.merchantAccount.findUnique({
+                where: { merchantId },
+            });
+            if (!merchantAccount) {
+                throw new Error("MERCHANT_NOT_FOUND");
+            }
+
+            await tx.userAccount.update({
+                where: { userId },
+                data: { balance: { decrement: amount } },
+            });
+            await tx.merchantAccount.update({
+                where: { merchantId },
+                data: { balance: { increment: amount } },
+            });
+            await tx.transaction.create({
+                data: {
+                    amount,
+                    type: "MERCHANT_PAYMENT",
+                    fromUserId: userId,
+                    toMerchantId: merchantId,
+                },
+            });
+        }, {
+            maxWait: 10000,
+            timeout: 30000,
+        });
+
+        res.json({ message: "Payment successful" });
+    } catch (error: any) {
+        if (error.message === "INSUFFICIENT_BALANCE") {
+            res.status(400).json({ message: "Insufficient balance" });
+            return;
+        }
+        if (error.message === "MERCHANT_NOT_FOUND") {
+            res.status(404).json({ message: "Merchant not found" });
+            return;
+        }
+        res.status(500).json({ message: "Payment failed" });
+    }
+});
+
+//@ts-ignore
+userRouter.post("/send", userAuthMiddleware, async (req: AuthRequest, res) => {
+    try {
+        const parsed = userTransferSchema.safeParse(req.body);
+        if (!parsed.success) {
+            res.status(400).json({ message: parsed.error.issues[0].message });
+            return;
+        }
+        const { toUserId, amount } = parsed.data;
+        const fromUserId = req.ID!;
+
+        if (fromUserId === toUserId) {
+            res.status(400).json({ message: "Cannot send to yourself" });
+            return;
+        }
+
+        await prisma.$transaction(async (tx) => {
+            await tx.$queryRaw`SELECT * FROM "UserAccount" WHERE "userId" = ${fromUserId} FOR UPDATE`;
+
+            const senderAccount = await tx.userAccount.findUnique({
+                where: { userId: fromUserId },
+            });
+            if (!senderAccount || senderAccount.balance < amount) {
+                throw new Error("INSUFFICIENT_BALANCE");
+            }
+
+            const receiverAccount = await tx.userAccount.findUnique({
+                where: { userId: toUserId },
+            });
+            if (!receiverAccount) {
+                throw new Error("RECIPIENT_NOT_FOUND");
+            }
+
+            await tx.userAccount.update({
+                where: { userId: fromUserId },
+                data: { balance: { decrement: amount } },
+            });
+            await tx.userAccount.update({
+                where: { userId: toUserId },
+                data: { balance: { increment: amount } },
+            });
+            await tx.transaction.create({
+                data: {
+                    amount,
+                    type: "TRANSFER",
+                    fromUserId,
+                    toUserId,
+                },
+            });
+        }, {
+            maxWait: 10000,
+            timeout: 30000,
+        });
+
+        res.json({ message: "Transfer successful" });
+    } catch (error: any) {
+        if (error.message === "INSUFFICIENT_BALANCE") {
+            res.status(400).json({ message: "Insufficient balance" });
+            return;
+        }
+        if (error.message === "RECIPIENT_NOT_FOUND") {
+            res.status(404).json({ message: "Recipient not found" });
+            return;
+        }
+        res.status(500).json({ message: "Transfer failed" });
+    }
+});
