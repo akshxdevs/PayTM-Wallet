@@ -14,71 +14,88 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.merchantRouter = void 0;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
-const client_1 = require("@prisma/client");
+const bcrypt_1 = __importDefault(require("bcrypt"));
 const express_1 = require("express");
 const config_1 = require("../config");
+const db_1 = require("../db");
+const middleware_1 = require("../middleware");
+const validation_1 = require("../validation");
 exports.merchantRouter = (0, express_1.Router)();
-const prismaClient = new client_1.PrismaClient();
 exports.merchantRouter.post("/signup", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const { username, password } = req.body;
-        if (!username || !password) {
-            res.status(403).send({
-                message: "All feilds are required!"
+        const parsed = validation_1.merchantSignupSchema.safeParse(req.body);
+        if (!parsed.success) {
+            res.status(400).json({ message: parsed.error.issues[0].message });
+            return;
+        }
+        const { username, password } = parsed.data;
+        const existing = yield db_1.prisma.merchant.findUnique({ where: { username } });
+        if (existing) {
+            res.status(409).json({ message: "Username already taken" });
+            return;
+        }
+        yield db_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
+            const hashedPassword = yield bcrypt_1.default.hash(password, 10);
+            const merchant = yield tx.merchant.create({
+                data: { username, password: hashedPassword },
             });
-        }
-        else {
-            yield prismaClient.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
-                const merchant = yield tx.merchant.create({
-                    data: {
-                        username: username,
-                        password: password
-                    }
-                });
-                yield tx.merchantAccount.create({
-                    data: {
-                        merchantId: merchant.id
-                    }
-                });
-                res.json({
-                    message: "Merchant Account created sucessfully!"
-                });
-            }));
-        }
+            yield tx.merchantAccount.create({
+                data: { merchantId: merchant.id },
+            });
+        }));
+        res.json({ message: "Merchant account created successfully!" });
     }
     catch (error) {
-        res.status(411).send({ message: "Error while sigining.." });
+        res.status(500).json({ message: "Error while signing up" });
     }
 }));
 exports.merchantRouter.post("/signin", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const { username, password } = req.body;
-        if (!username || !password) {
-            res.status(403).send({
-                message: "All feilds are required!"
-            });
+        const parsed = validation_1.signinSchema.safeParse(req.body);
+        if (!parsed.success) {
+            res.status(400).json({ message: parsed.error.issues[0].message });
+            return;
         }
-        const merchant = yield prismaClient.merchant.findFirst({
-            where: {
-                username: username
-            }
-        });
-        if (merchant) {
-            const token = jsonwebtoken_1.default.sign({
-                ID: merchant.id,
-            }, config_1.MERCHANT_SECERT);
-            res.json({
-                message: "Merchant Login Sucessfull!!",
-                token: token
-            });
+        const { username, password } = parsed.data;
+        const merchant = yield db_1.prisma.merchant.findUnique({ where: { username } });
+        if (!merchant || !(yield bcrypt_1.default.compare(password, merchant.password))) {
+            res.status(403).json({ message: "Invalid username or password!" });
+            return;
         }
-        else {
-            res.status(403).send({
-                message: "No Merchant Found!!"
-            });
-        }
+        const token = jsonwebtoken_1.default.sign({ ID: merchant.id }, config_1.MERCHANT_SECRET);
+        res.json({ message: "Merchant login successful!", token });
     }
     catch (error) {
-        res.status(411).send({ message: "Error while logging.." });
+        res.status(500).json({ message: "Error while signing in" });
+    }
+}));
+//@ts-ignore
+exports.merchantRouter.get("/balance", middleware_1.merchantAuthMiddleware, (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const account = yield db_1.prisma.merchantAccount.findUnique({
+            where: { merchantId: req.ID },
+        });
+        if (!account) {
+            res.status(404).json({ message: "Account not found" });
+            return;
+        }
+        res.json({ balance: account.balance, locked: account.locked });
+    }
+    catch (error) {
+        res.status(500).json({ message: "Error fetching balance" });
+    }
+}));
+//@ts-ignore
+exports.merchantRouter.get("/transactions", middleware_1.merchantAuthMiddleware, (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const transactions = yield db_1.prisma.transaction.findMany({
+            where: { toMerchantId: req.ID },
+            orderBy: { createdAt: "desc" },
+            take: 20,
+        });
+        res.json({ transactions });
+    }
+    catch (error) {
+        res.status(500).json({ message: "Error fetching transactions" });
     }
 }));
