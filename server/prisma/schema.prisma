@@ -1,9 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -13,33 +7,55 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model User {
-  id String @id @default(uuid())
-  name String
-  username String @unique
-  password String
-  account UserAccount? 
+enum TransactionType {
+  ONRAMP
+  TRANSFER
+  MERCHANT_PAYMENT
 }
 
-model UserAccount{
-  id String @default(uuid())
-  balance Int @default(0)
-  locked Int @default(0)
-  userId String @unique
-  user User @relation(fields: [userId], references: [id])
+model User {
+  id                   String        @id @default(uuid())
+  name                 String
+  username             String        @unique
+  password             String
+  account              UserAccount?
+  sentTransactions     Transaction[] @relation("SentTransactions")
+  receivedTransactions Transaction[] @relation("ReceivedTransactions")
+}
+
+model UserAccount {
+  id      String @id @default(uuid())
+  balance Int    @default(0)
+  locked  Int    @default(0)
+  userId  String @unique
+  user    User   @relation(fields: [userId], references: [id])
 }
 
 model Merchant {
-  id String @id @default(uuid())
-  username String @unique
-  password String
-  account MerchantAccount[]
+  id           String           @id @default(uuid())
+  username     String           @unique
+  password     String
+  account      MerchantAccount?
+  transactions Transaction[]
 }
 
 model MerchantAccount {
-  id String @default(uuid())
-  balance Int @default(0)
-  locked Int @default(0)
-  merchantId String @unique
-  merchant Merchant @relation(fields: [merchantId], references: [id])
+  id         String   @id @default(uuid())
+  balance    Int      @default(0)
+  locked     Int      @default(0)
+  merchantId String   @unique
+  merchant   Merchant @relation(fields: [merchantId], references: [id])
+}
+
+model Transaction {
+  id           String          @id @default(uuid())
+  amount       Int
+  type         TransactionType
+  fromUserId   String?
+  toUserId     String?
+  toMerchantId String?
+  createdAt    DateTime        @default(now())
+  fromUser     User?           @relation("SentTransactions", fields: [fromUserId], references: [id])
+  toUser       User?           @relation("ReceivedTransactions", fields: [toUserId], references: [id])
+  toMerchant   Merchant?       @relation(fields: [toMerchantId], references: [id])
 }
