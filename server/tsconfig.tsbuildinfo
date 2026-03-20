@@ -1,1 +1,1 @@
-{"root":["./src/config.ts","./src/index.ts","./src/middleware.ts","./src/routes/merchant.ts","./src/routes/user.ts"],"version":"5.6.2"}
+{"root":["./src/config.ts","./src/db.ts","./src/index.ts","./src/middleware.ts","./src/validation.ts","./src/routes/merchant.ts","./src/routes/user.ts"],"version":"5.9.3"}
